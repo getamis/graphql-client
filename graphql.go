@@ -49,8 +49,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-type BuildSigHeaderFunc func(body string) http.Header
-
 // Client is a client for interacting with a GraphQL API.
 type Client struct {
 	endpoint         string
@@ -68,7 +66,7 @@ type Client struct {
 	apiKey           string
 	apiSecret        string
 	nowFn            func() time.Time
-	BuildSigHeaderFn BuildSigHeaderFunc
+	BuildSigHeaderFn func(body string) http.Header
 }
 
 // NewClient makes a new Client capable of making GraphQL requests.
@@ -188,18 +186,35 @@ func createFormFile(w *multipart.Writer, fieldname, filename string, contentType
 
 func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp interface{}) error {
 	var requestBody bytes.Buffer
+	if len(req.files) > 0 {
+		req.Var("files", make([]*string, len(req.files)))
+	}
+	requestBodyObj := struct {
+		Query     string                 `json:"query"`
+		Variables map[string]interface{} `json:"variables"`
+	}{
+		Query:     req.q,
+		Variables: req.vars,
+	}
+	reqStr, err := json.Marshal(&requestBodyObj)
+	if err != nil {
+		return errors.Wrap(err, "json marshal failed")
+	}
 	writer := multipart.NewWriter(&requestBody)
-	if err := writer.WriteField("query", req.q); err != nil {
+	if err := writer.WriteField("operations", string(reqStr)); err != nil {
 		return errors.Wrap(err, "write query field")
 	}
-	var variablesBuf bytes.Buffer
-	if len(req.vars) > 0 {
-		variablesField, err := writer.CreateFormField("variables")
-		if err != nil {
-			return errors.Wrap(err, "create variables field")
+	if len(req.files) > 0 {
+		mapPart := make(map[string][]string)
+		for idx := range req.files {
+			mapPart[fmt.Sprintf("%d", idx)] = []string{fmt.Sprintf("variables.files.%d", idx)}
 		}
-		if err := json.NewEncoder(io.MultiWriter(variablesField, &variablesBuf)).Encode(req.vars); err != nil {
-			return errors.Wrap(err, "encode variables")
+		mapPartStr, err := json.Marshal(mapPart)
+		if err != nil {
+			return errors.Wrap(err, "json marshal failed")
+		}
+		if err := writer.WriteField("map", string(mapPartStr)); err != nil {
+			return errors.Wrap(err, "write query field")
 		}
 	}
 	for i := range req.files {
@@ -214,7 +229,6 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 	if err := writer.Close(); err != nil {
 		return errors.Wrap(err, "close writer")
 	}
-	c.logf(">> variables: %s", variablesBuf.String())
 	c.logf(">> files: %d", len(req.files))
 	c.logf(">> query: %s", req.q)
 	gr := &graphResponse{
@@ -352,9 +366,10 @@ func (req *Request) Query() string {
 // File sets a file to upload.
 // Files are only supported with a Client that was created with
 // the UseMultipartForm option.
-func (req *Request) File(fieldname, filename string, r io.Reader, contentType string) {
+func (req *Request) File(filename string, r io.Reader, contentType string) {
+	oriLen := len(req.files)
 	req.files = append(req.files, File{
-		Field:       fieldname,
+		Field:       fmt.Sprintf("%d", oriLen),
 		Name:        filename,
 		ContentType: contentType,
 		R:           r,
