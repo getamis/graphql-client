@@ -253,7 +253,7 @@ func TestFile(t *testing.T) {
 	client := NewClient(srv.URL, UseMultipartForm())
 	f := strings.NewReader(`This is a file`)
 	req := NewRequest("query {}")
-	req.File("file", "filename.txt", f)
+	req.File("file", "filename.txt", f, "")
 	err := client.Run(ctx, req, nil)
 	is.NoErr(err)
 }

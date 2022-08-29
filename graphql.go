@@ -35,15 +35,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/gorilla/websocket"
-	"github.com/pkg/errors"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/pkg/errors"
 )
 
 // Client is a client for interacting with a GraphQL API.
@@ -59,14 +62,21 @@ type Client struct {
 	// To log to standard out, use:
 	//  client.Log = func(s string) { log.Println(s) }
 	Log func(s string)
-}
 
+	apiKey           string
+	apiSecret        string
+	nowFn            func() time.Time
+	BuildSigHeaderFn func(body string) http.Header
+}
 
 // NewClient makes a new Client capable of making GraphQL requests.
 func NewClient(endpoint string, opts ...ClientOption) *Client {
 	c := &Client{
 		endpoint: endpoint,
 		Log:      func(string) {},
+		//apiKey:           apiKey,
+		//apiSecret:        apiSecret,
+		//buildSigHeaderFn: sigHeaderFunc,
 	}
 	for _, optionFunc := range opts {
 		optionFunc(c)
@@ -155,24 +165,60 @@ func (c *Client) runWithJSON(ctx context.Context, req *Request, resp interface{}
 	return nil
 }
 
+var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
+
+func escapeQuotes(s string) string {
+	return quoteEscaper.Replace(s)
+}
+
+func createFormFile(w *multipart.Writer, fieldname, filename string, contentType string) (io.Writer, error) {
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition",
+		fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
+			escapeQuotes(fieldname), escapeQuotes(filename)))
+	if contentType != "" {
+		h.Set("Content-Type", contentType)
+	} else {
+		h.Set("Content-Type", "application/octet-stream")
+	}
+	return w.CreatePart(h)
+}
+
 func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp interface{}) error {
 	var requestBody bytes.Buffer
+	if len(req.files) > 0 {
+		req.Var("files", make([]*string, len(req.files)))
+	}
+	requestBodyObj := struct {
+		Query     string                 `json:"query"`
+		Variables map[string]interface{} `json:"variables"`
+	}{
+		Query:     req.q,
+		Variables: req.vars,
+	}
+	reqStr, err := json.Marshal(&requestBodyObj)
+	if err != nil {
+		return errors.Wrap(err, "json marshal failed")
+	}
 	writer := multipart.NewWriter(&requestBody)
-	if err := writer.WriteField("query", req.q); err != nil {
+	if err := writer.WriteField("operations", string(reqStr)); err != nil {
 		return errors.Wrap(err, "write query field")
 	}
-	var variablesBuf bytes.Buffer
-	if len(req.vars) > 0 {
-		variablesField, err := writer.CreateFormField("variables")
-		if err != nil {
-			return errors.Wrap(err, "create variables field")
+	if len(req.files) > 0 {
+		mapPart := make(map[string][]string)
+		for idx := range req.files {
+			mapPart[fmt.Sprintf("%d", idx)] = []string{fmt.Sprintf("variables.files.%d", idx)}
 		}
-		if err := json.NewEncoder(io.MultiWriter(variablesField, &variablesBuf)).Encode(req.vars); err != nil {
-			return errors.Wrap(err, "encode variables")
+		mapPartStr, err := json.Marshal(mapPart)
+		if err != nil {
+			return errors.Wrap(err, "json marshal failed")
+		}
+		if err := writer.WriteField("map", string(mapPartStr)); err != nil {
+			return errors.Wrap(err, "write query field")
 		}
 	}
 	for i := range req.files {
-		part, err := writer.CreateFormFile(req.files[i].Field, req.files[i].Name)
+		part, err := createFormFile(writer, req.files[i].Field, req.files[i].Name, req.files[i].ContentType)
 		if err != nil {
 			return errors.Wrap(err, "create form file")
 		}
@@ -183,7 +229,6 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 	if err := writer.Close(); err != nil {
 		return errors.Wrap(err, "close writer")
 	}
-	c.logf(">> variables: %s", variablesBuf.String())
 	c.logf(">> files: %d", len(req.files))
 	c.logf(">> query: %s", req.q)
 	gr := &graphResponse{
@@ -200,6 +245,14 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 		for _, value := range values {
 			r.Header.Add(key, value)
 		}
+	}
+	if c.BuildSigHeaderFn != nil {
+		for key, values := range c.BuildSigHeaderFn(requestBody.String()) {
+			for _, value := range values {
+				r.Header.Add(key, value)
+			}
+		}
+
 	}
 	c.logf(">> headers: %v", r.Header)
 	r = r.WithContext(ctx)
@@ -313,31 +366,31 @@ func (req *Request) Query() string {
 // File sets a file to upload.
 // Files are only supported with a Client that was created with
 // the UseMultipartForm option.
-func (req *Request) File(fieldname, filename string, r io.Reader) {
+func (req *Request) File(filename string, r io.Reader, contentType string) {
+	oriLen := len(req.files)
 	req.files = append(req.files, File{
-		Field: fieldname,
-		Name:  filename,
-		R:     r,
+		Field:       fmt.Sprintf("%d", oriLen),
+		Name:        filename,
+		ContentType: contentType,
+		R:           r,
 	})
 }
 
 // File represents a file to upload.
 type File struct {
-	Field string
-	Name  string
-	R     io.Reader
+	Field       string
+	Name        string
+	ContentType string
+	R           io.Reader
 }
-
 
 type SubscriptionClient struct {
-
-	subWebsocket * websocket.Conn
-	subBuffer chan subscriptionMessage
-	subWait sync.WaitGroup
-	subs sync.Map
-	subIdGen int
+	subWebsocket *websocket.Conn
+	subBuffer    chan subscriptionMessage
+	subWait      sync.WaitGroup
+	subs         sync.Map
+	subIdGen     int
 }
-
 
 type subscriptionMessageType string
 
@@ -360,7 +413,7 @@ type subscriptionMessage struct {
 	Type    subscriptionMessageType `json:"type"`
 }
 
-func (c * Client) SubscriptionClient(ctx context.Context, header http.Header) (* SubscriptionClient, error) {
+func (c *Client) SubscriptionClient(ctx context.Context, header http.Header) (*SubscriptionClient, error) {
 	dialer := websocket.DefaultDialer
 	header.Set("Sec-WebSocket-Protocol", "graphql-ws")
 	header.Set("Content-Type", "application/json")
@@ -375,7 +428,7 @@ func (c * Client) SubscriptionClient(ctx context.Context, header http.Header) (*
 	}
 	subClient := &SubscriptionClient{
 		subWebsocket: conn,
-		subBuffer: make(chan subscriptionMessage),
+		subBuffer:    make(chan subscriptionMessage),
 	}
 
 	var msg subscriptionMessage
@@ -403,12 +456,11 @@ func (c * Client) SubscriptionClient(ctx context.Context, header http.Header) (*
 		}
 	}
 
-
 	go subClient.subWork()
 	return subClient, nil
 }
 
-func (c * SubscriptionClient) Close() error {
+func (c *SubscriptionClient) Close() error {
 	if c.subWebsocket == nil {
 		return nil
 	}
@@ -432,13 +484,13 @@ type SubscriptionPayload struct {
 
 type Subscription chan SubscriptionPayload
 
-func (c * SubscriptionClient) subWork() {
+func (c *SubscriptionClient) subWork() {
 	c.subWait.Add(1)
 	defer c.subWait.Done()
-	defer c.subs.Range(func (_, sub interface{}) bool {
-			close(sub.(Subscription))
-			return true
-		})
+	defer c.subs.Range(func(_, sub interface{}) bool {
+		close(sub.(Subscription))
+		return true
+	})
 
 	for {
 		var msg subscriptionMessage
@@ -453,7 +505,7 @@ func (c * SubscriptionClient) subWork() {
 				return
 			}
 
-			log.Fatalf("Error reading from subscription websocket : %s",  err)
+			log.Fatalf("Error reading from subscription websocket : %s", err)
 			return
 		}
 
@@ -472,12 +524,12 @@ func (c * SubscriptionClient) subWork() {
 			close(ch.(Subscription))
 			c.subs.Delete(id)
 
-		case gql_connection_keep_alive://ignore...
+		case gql_connection_keep_alive: //ignore...
 		}
 	}
 }
 
-func (c * SubscriptionClient) Subscribe(req * Request) (Subscription, error) {
+func (c *SubscriptionClient) Subscribe(req *Request) (Subscription, error) {
 
 	var requestBody bytes.Buffer
 	requestBodyObj := struct {
@@ -491,7 +543,7 @@ func (c * SubscriptionClient) Subscribe(req * Request) (Subscription, error) {
 		return nil, errors.Wrap(err, "encode body")
 	}
 	id := strconv.Itoa(c.subIdGen)
-	c.subIdGen ++
+	c.subIdGen++
 
 	payload := json.RawMessage(requestBody.Bytes())
 	sReq := subscriptionMessage{
@@ -510,8 +562,8 @@ func (c * SubscriptionClient) Subscribe(req * Request) (Subscription, error) {
 	return subChan, nil
 }
 
-func (c * SubscriptionClient) Unsubscribe(sub Subscription)  {
-	c.subs.Range(func(key interface{}, value interface {}) bool {
+func (c *SubscriptionClient) Unsubscribe(sub Subscription) {
+	c.subs.Range(func(key interface{}, value interface{}) bool {
 		if value == sub {
 			id := key.(string)
 			_ = c.subWebsocket.WriteJSON(subscriptionMessage{Id: &id, Type: gql_stop})
