@@ -186,9 +186,6 @@ func createFormFile(w *multipart.Writer, fieldname, filename string, contentType
 
 func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp interface{}) error {
 	var requestBody bytes.Buffer
-	if len(req.files) > 0 {
-		req.Var("files", make([]*string, len(req.files)))
-	}
 	requestBodyObj := struct {
 		Query     string                 `json:"query"`
 		Variables map[string]interface{} `json:"variables"`
@@ -206,8 +203,8 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 	}
 	if len(req.files) > 0 {
 		mapPart := make(map[string][]string)
-		for idx := range req.files {
-			mapPart[fmt.Sprintf("%d", idx)] = []string{fmt.Sprintf("variables.files.%d", idx)}
+		for _, f := range req.files {
+			mapPart[f.PartName] = []string{f.Field}
 		}
 		mapPartStr, err := json.Marshal(mapPart)
 		if err != nil {
@@ -218,7 +215,7 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 		}
 	}
 	for i := range req.files {
-		part, err := createFormFile(writer, req.files[i].Field, req.files[i].Name, req.files[i].ContentType)
+		part, err := createFormFile(writer, req.files[i].PartName, req.files[i].Name, req.files[i].ContentType)
 		if err != nil {
 			return errors.Wrap(err, "create form file")
 		}
@@ -366,10 +363,11 @@ func (req *Request) Query() string {
 // File sets a file to upload.
 // Files are only supported with a Client that was created with
 // the UseMultipartForm option.
-func (req *Request) File(filename string, r io.Reader, contentType string) {
+func (req *Request) File(fieldname, filename string, r io.Reader, contentType string) {
 	oriLen := len(req.files)
 	req.files = append(req.files, File{
-		Field:       fmt.Sprintf("%d", oriLen),
+		Field:       fieldname,
+		PartName:    fmt.Sprintf("%d", oriLen),
 		Name:        filename,
 		ContentType: contentType,
 		R:           r,
@@ -379,6 +377,7 @@ func (req *Request) File(filename string, r io.Reader, contentType string) {
 // File represents a file to upload.
 type File struct {
 	Field       string
+	PartName    string
 	Name        string
 	ContentType string
 	R           io.Reader
