@@ -231,10 +231,7 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 	gr := &graphResponse{
 		Data: resp,
 	}
-	var dupRequestBody bytes.Buffer
-	var bodyReader io.Reader = &requestBody
-	bodyReader = io.TeeReader(bodyReader, &dupRequestBody)
-	r, err := http.NewRequest(http.MethodPost, c.endpoint, bodyReader)
+	r, err := http.NewRequest(http.MethodPost, c.endpoint, &requestBody)
 	if err != nil {
 		return err
 	}
@@ -247,7 +244,7 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 		}
 	}
 	if c.BuildSigHeaderFn != nil {
-		for key, values := range c.BuildSigHeaderFn(dupRequestBody.String()) {
+		for key, values := range c.BuildSigHeaderFn(requestBody.String()) {
 			for _, value := range values {
 				r.Header.Add(key, value)
 			}
