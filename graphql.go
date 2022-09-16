@@ -43,11 +43,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
 )
+
+type BuildHeaderFunc func(reqBody string) http.Header
 
 // Client is a client for interacting with a GraphQL API.
 type Client struct {
@@ -63,10 +64,7 @@ type Client struct {
 	//  client.Log = func(s string) { log.Println(s) }
 	Log func(s string)
 
-	apiKey           string
-	apiSecret        string
-	nowFn            func() time.Time
-	BuildSigHeaderFn func(body string) http.Header
+	buildHeaderFunc BuildHeaderFunc
 }
 
 // NewClient makes a new Client capable of making GraphQL requests.
@@ -74,9 +72,6 @@ func NewClient(endpoint string, opts ...ClientOption) *Client {
 	c := &Client{
 		endpoint: endpoint,
 		Log:      func(string) {},
-		//apiKey:           apiKey,
-		//apiSecret:        apiSecret,
-		//buildSigHeaderFn: sigHeaderFunc,
 	}
 	for _, optionFunc := range opts {
 		optionFunc(c)
@@ -243,8 +238,8 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 			r.Header.Add(key, value)
 		}
 	}
-	if c.BuildSigHeaderFn != nil {
-		for key, values := range c.BuildSigHeaderFn(requestBody.String()) {
+	if c.buildHeaderFunc != nil {
+		for key, values := range c.buildHeaderFunc(requestBody.String()) {
 			for _, value := range values {
 				r.Header.Add(key, value)
 			}
@@ -282,6 +277,12 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 func WithHTTPClient(httpclient *http.Client) ClientOption {
 	return func(client *Client) {
 		client.httpClient = httpclient
+	}
+}
+
+func WithBuildHeaderFunc(f BuildHeaderFunc) ClientOption {
+	return func(client *Client) {
+		client.buildHeaderFunc = f
 	}
 }
 
