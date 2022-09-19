@@ -130,6 +130,13 @@ func (c *Client) runWithJSON(ctx context.Context, req *Request, resp interface{}
 	r.Close = c.closeReq
 	r.Header.Set("Content-Type", "application/json; charset=utf-8")
 	r.Header.Set("Accept", "application/json; charset=utf-8")
+	if c.buildHeaderFunc != nil {
+		for key, values := range c.buildHeaderFunc(requestBody.String()) {
+			for _, value := range values {
+				r.Header.Add(key, value)
+			}
+		}
+	}
 	for key, values := range req.Header {
 		for _, value := range values {
 			r.Header.Add(key, value)
@@ -244,7 +251,6 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 				r.Header.Add(key, value)
 			}
 		}
-
 	}
 	c.logf(">> headers: %v", r.Header)
 	r = r.WithContext(ctx)
