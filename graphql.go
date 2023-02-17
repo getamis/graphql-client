@@ -311,17 +311,19 @@ func ImmediatelyCloseReqBody() ClientOption {
 // modify the behaviour of the Client.
 type ClientOption func(*Client)
 
-type graphErr struct {
-	Message string
+type GraphQLErr struct {
+	Message    string                 `json:"message"`
+	Path       []interface{}          `json:"path,omitempty"`
+	Extensions map[string]interface{} `json:"extensions,omitempty"`
 }
 
-func (e graphErr) Error() string {
+func (e GraphQLErr) Error() string {
 	return "graphql: " + e.Message
 }
 
 type graphResponse struct {
 	Data   interface{}
-	Errors []graphErr
+	Errors []GraphQLErr
 }
 
 // Request is a GraphQL request.
