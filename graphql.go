@@ -1,33 +1,34 @@
 // Package graphql provides a low level GraphQL client.
 //
-//  // create a client (safe to share across requests)
-//  client := graphql.NewClient("https://machinebox.io/graphql")
+//	// create a client (safe to share across requests)
+//	client := graphql.NewClient("https://machinebox.io/graphql")
 //
-//  // make a request
-//  req := graphql.NewRequest(`
-//      query ($key: String!) {
-//          items (id:$key) {
-//              field1
-//              field2
-//              field3
-//          }
-//      }
-//  `)
+//	// make a request
+//	req := graphql.NewRequest(`
+//	    query ($key: String!) {
+//	        items (id:$key) {
+//	            field1
+//	            field2
+//	            field3
+//	        }
+//	    }
+//	`)
 //
-//  // set any variables
-//  req.Var("key", "value")
+//	// set any variables
+//	req.Var("key", "value")
 //
-//  // run it and capture the response
-//  var respData ResponseStruct
-//  if err := client.Run(ctx, req, &respData); err != nil {
-//      log.Fatal(err)
-//  }
+//	// run it and capture the response
+//	var respData ResponseStruct
+//	if err := client.Run(ctx, req, &respData); err != nil {
+//	    log.Fatal(err)
+//	}
 //
-// Specify client
+// # Specify client
 //
 // To specify your own http.Client, use the WithHTTPClient option:
-//  httpclient := &http.Client{}
-//  client := graphql.NewClient("https://machinebox.io/graphql", graphql.WithHTTPClient(httpclient))
+//
+//	httpclient := &http.Client{}
+//	client := graphql.NewClient("https://machinebox.io/graphql", graphql.WithHTTPClient(httpclient))
 package graphql
 
 import (
@@ -108,10 +109,7 @@ func (c *Client) Run(ctx context.Context, req *Request, resp interface{}) error 
 
 func (c *Client) runWithJSON(ctx context.Context, req *Request, resp interface{}) error {
 	var requestBody bytes.Buffer
-	requestBodyObj := struct {
-		Query     string                 `json:"query"`
-		Variables map[string]interface{} `json:"variables"`
-	}{
+	requestBodyObj := RequestBody{
 		Query:     req.q,
 		Variables: req.vars,
 	}
@@ -120,9 +118,6 @@ func (c *Client) runWithJSON(ctx context.Context, req *Request, resp interface{}
 	}
 	c.logf(">> variables: %v", req.vars)
 	c.logf(">> query: %s", req.q)
-	gr := &graphResponse{
-		Data: resp,
-	}
 	r, err := http.NewRequest(http.MethodPost, c.endpoint, &requestBody)
 	if err != nil {
 		return err
@@ -143,28 +138,7 @@ func (c *Client) runWithJSON(ctx context.Context, req *Request, resp interface{}
 		}
 	}
 	c.logf(">> headers: %v", r.Header)
-	r = r.WithContext(ctx)
-	res, err := c.httpClient.Do(r)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, res.Body); err != nil {
-		return errors.Wrap(err, "reading body")
-	}
-	c.logf("<< %s", buf.String())
-	if err := json.NewDecoder(&buf).Decode(&gr); err != nil {
-		if res.StatusCode != http.StatusOK {
-			return fmt.Errorf("graphql: server returned a non-200 status code: %v", res.StatusCode)
-		}
-		return errors.Wrap(err, "decoding response")
-	}
-	if len(gr.Errors) > 0 {
-		// return first error
-		return gr.Errors[0]
-	}
-	return nil
+	return c.do(ctx, r, resp)
 }
 
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
@@ -188,10 +162,7 @@ func createFormFile(w *multipart.Writer, fieldname, filename string, contentType
 
 func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp interface{}) error {
 	var requestBody bytes.Buffer
-	requestBodyObj := struct {
-		Query     string                 `json:"query"`
-		Variables map[string]interface{} `json:"variables"`
-	}{
+	requestBodyObj := RequestBody{
 		Query:     req.q,
 		Variables: req.vars,
 	}
@@ -230,9 +201,6 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 	}
 	c.logf(">> files: %d", len(req.files))
 	c.logf(">> query: %s", req.q)
-	gr := &graphResponse{
-		Data: resp,
-	}
 	r, err := http.NewRequest(http.MethodPost, c.endpoint, &requestBody)
 	if err != nil {
 		return err
@@ -253,6 +221,10 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 		}
 	}
 	c.logf(">> headers: %v", r.Header)
+	return c.do(ctx, r, resp)
+}
+
+func (c *Client) do(ctx context.Context, r *http.Request, resp interface{}) error {
 	r = r.WithContext(ctx)
 	res, err := c.httpClient.Do(r)
 	if err != nil {
@@ -264,22 +236,27 @@ func (c *Client) runWithPostFields(ctx context.Context, req *Request, resp inter
 		return errors.Wrap(err, "reading body")
 	}
 	c.logf("<< %s", buf.String())
-	if err := json.NewDecoder(&buf).Decode(&gr); err != nil {
-		if res.StatusCode != http.StatusOK {
-			return fmt.Errorf("graphql: server returned a non-200 status code: %v", res.StatusCode)
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("graphql: server returned a non-200 status code: %v, body: %v", res.StatusCode, buf.String())
+	} else {
+		gr := &graphResponse{
+			Data: resp,
 		}
-		return errors.Wrap(err, "decoding response")
-	}
-	if len(gr.Errors) > 0 {
-		// return first error
-		return gr.Errors[0]
+		if err := json.NewDecoder(&buf).Decode(&gr); err != nil {
+			return errors.Wrap(err, fmt.Sprintf("decoding response, body: %v", buf.String()))
+		}
+		if len(gr.Errors) > 0 {
+			// return first error
+			return gr.Errors[0]
+		}
 	}
 	return nil
 }
 
 // WithHTTPClient specifies the underlying http.Client to use when
 // making requests.
-//  NewClient(endpoint, WithHTTPClient(specificHTTPClient))
+//
+//	NewClient(endpoint, WithHTTPClient(specificHTTPClient))
 func WithHTTPClient(httpclient *http.Client) ClientOption {
 	return func(client *Client) {
 		client.httpClient = httpclient
@@ -300,7 +277,7 @@ func UseMultipartForm() ClientOption {
 	}
 }
 
-//ImmediatelyCloseReqBody will close the req body immediately after each request body is ready
+// ImmediatelyCloseReqBody will close the req body immediately after each request body is ready
 func ImmediatelyCloseReqBody() ClientOption {
 	return func(client *Client) {
 		client.closeReq = true
@@ -335,6 +312,11 @@ type Request struct {
 	// Header represent any request headers that will be set
 	// when the request is made.
 	Header http.Header
+}
+
+type RequestBody struct {
+	Query     string                 `json:"query"`
+	Variables map[string]interface{} `json:"variables"`
 }
 
 // NewRequest makes a new Request with the specified string.
@@ -540,10 +522,7 @@ func (c *SubscriptionClient) subWork() {
 func (c *SubscriptionClient) Subscribe(req *Request) (Subscription, error) {
 
 	var requestBody bytes.Buffer
-	requestBodyObj := struct {
-		Query     string                 `json:"query"`
-		Variables map[string]interface{} `json:"variables"`
-	}{
+	requestBodyObj := RequestBody{
 		Query:     req.q,
 		Variables: req.vars,
 	}
