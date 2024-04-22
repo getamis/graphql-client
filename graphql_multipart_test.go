@@ -2,8 +2,8 @@ package graphql
 
 import (
 	"context"
+	"encoding/json"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +20,7 @@ func TestWithClient(t *testing.T) {
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			calls++
 			resp := &http.Response{
-				Body: ioutil.NopCloser(strings.NewReader(`{"data":{"key":"value"}}`)),
+				Body: io.NopCloser(strings.NewReader(`{"data":{"key":"value"}}`)),
 			}
 			return resp, nil
 		}),
@@ -41,8 +41,11 @@ func TestDoUseMultipartForm(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		is.Equal(r.Method, http.MethodPost)
-		query := r.FormValue("query")
-		is.Equal(query, `query {}`)
+		req := &RequestBody{}
+		is.NoErr(json.Unmarshal([]byte(r.FormValue("operations")), req))
+		is.Equal(req, &RequestBody{
+			Query: `query {}`,
+		})
 		io.WriteString(w, `{
 			"data": {
 				"something": "yes"
@@ -68,8 +71,11 @@ func TestImmediatelyCloseReqBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		is.Equal(r.Method, http.MethodPost)
-		query := r.FormValue("query")
-		is.Equal(query, `query {}`)
+		req := &RequestBody{}
+		is.NoErr(json.Unmarshal([]byte(r.FormValue("operations")), req))
+		is.Equal(req, &RequestBody{
+			Query: `query {}`,
+		})
 		io.WriteString(w, `{
 			"data": {
 				"something": "yes"
@@ -96,8 +102,11 @@ func TestDoErr(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		is.Equal(r.Method, http.MethodPost)
-		query := r.FormValue("query")
-		is.Equal(query, `query {}`)
+		req := &RequestBody{}
+		is.NoErr(json.Unmarshal([]byte(r.FormValue("operations")), req))
+		is.Equal(req, &RequestBody{
+			Query: `query {}`,
+		})
 		io.WriteString(w, `{
 			"errors": [{
 				"message": "Something went wrong"
@@ -123,8 +132,11 @@ func TestDoServerErr(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		is.Equal(r.Method, http.MethodPost)
-		query := r.FormValue("query")
-		is.Equal(query, `query {}`)
+		req := &RequestBody{}
+		is.NoErr(json.Unmarshal([]byte(r.FormValue("operations")), req))
+		is.Equal(req, &RequestBody{
+			Query: `query {}`,
+		})
 		w.WriteHeader(http.StatusInternalServerError)
 		io.WriteString(w, `Internal Server Error`)
 	}))
@@ -146,8 +158,11 @@ func TestDoBadRequestErr(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		is.Equal(r.Method, http.MethodPost)
-		query := r.FormValue("query")
-		is.Equal(query, `query {}`)
+		req := &RequestBody{}
+		is.NoErr(json.Unmarshal([]byte(r.FormValue("operations")), req))
+		is.Equal(req, &RequestBody{
+			Query: `query {}`,
+		})
 		w.WriteHeader(http.StatusBadRequest)
 		io.WriteString(w, `{
 			"errors": [{
@@ -173,8 +188,11 @@ func TestDoNoResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		is.Equal(r.Method, http.MethodPost)
-		query := r.FormValue("query")
-		is.Equal(query, `query {}`)
+		req := &RequestBody{}
+		is.NoErr(json.Unmarshal([]byte(r.FormValue("operations")), req))
+		is.Equal(req, &RequestBody{
+			Query: `query {}`,
+		})
 		io.WriteString(w, `{
 			"data": {
 				"something": "yes"
@@ -199,9 +217,14 @@ func TestQuery(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		query := r.FormValue("query")
-		is.Equal(query, "query {}")
-		is.Equal(r.FormValue("variables"), `{"username":"matryer"}`+"\n")
+		req := &RequestBody{}
+		is.NoErr(json.Unmarshal([]byte(r.FormValue("operations")), req))
+		is.Equal(req, &RequestBody{
+			Query: `query {}`,
+			Variables: map[string]interface{}{
+				"username": "matryer",
+			},
+		})
 		_, err := io.WriteString(w, `{"data":{"value":"some data"}}`)
 		is.NoErr(err)
 	}))
@@ -235,12 +258,12 @@ func TestFile(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		file, header, err := r.FormFile("file")
+		file, header, err := r.FormFile("0")
 		is.NoErr(err)
 		defer file.Close()
 		is.Equal(header.Filename, "filename.txt")
 
-		b, err := ioutil.ReadAll(file)
+		b, err := io.ReadAll(file)
 		is.NoErr(err)
 		is.Equal(string(b), `This is a file`)
 
