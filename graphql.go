@@ -243,7 +243,7 @@ func (c *Client) do(ctx context.Context, r *http.Request, resp interface{}) erro
 			Data: resp,
 		}
 		if err := json.NewDecoder(&buf).Decode(&gr); err != nil {
-			return errors.Wrap(err, "decoding response")
+			return errors.Wrap(err, fmt.Sprintf("decoding response, body: %v", buf.String()))
 		}
 		if len(gr.Errors) > 0 {
 			// return first error
