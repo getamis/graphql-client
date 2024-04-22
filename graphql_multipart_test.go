@@ -149,7 +149,7 @@ func TestDoServerErr(t *testing.T) {
 	defer cancel()
 	var responseData map[string]interface{}
 	err := client.Run(ctx, &Request{q: "query {}"}, &responseData)
-	is.Equal(err.Error(), "graphql: server returned a non-200 status code: 500")
+	is.Equal(err.Error(), "graphql: server returned a non-200 status code: 500, body: Internal Server Error")
 }
 
 func TestDoBadRequestErr(t *testing.T) {
@@ -163,7 +163,7 @@ func TestDoBadRequestErr(t *testing.T) {
 		is.Equal(req, &RequestBody{
 			Query: `query {}`,
 		})
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, `{
 			"errors": [{
 				"message": "miscellaneous message as to why the the request was bad"
